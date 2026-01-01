@@ -4,16 +4,13 @@ import path from "path";
 import axios from "axios";
 import { exec, execSync } from "child_process";
 
-// --- CONFIGURATION ---
 const GITHUB_USERNAME = "adhishcantcode";
 const REPO_NAME = "Neowalls";
 const FOLDER_PATH = "Walls";
 const BRANCH = "main";
-// ---------------------
 
 const API_URL = `https://api.github.com/repos/${GITHUB_USERNAME}/${REPO_NAME}/contents/${FOLDER_PATH}`;
 
-// Setup Cache Folder
 const CACHE_DIR = path.resolve(process.cwd(), "neowalls_cache");
 if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR);
 
@@ -44,7 +41,7 @@ const previewBox = blessed.box({
   width: "70%",
   height: "100%",
   content:
-    "{center}Preview Area\n\n⬇ Use Arrows to Browse\n[SPACE] View Actual Image\n[ENTER] Download & Set Wallpaper{/center}",
+    "{center}Preview Area\n\nUse Arrow Keys to Browse\n[SPACE] View Image\n[ENTER] Download & Set Wallpaper{/center}",
   tags: true,
   border: { type: "line" },
   style: { border: { fg: "yellow" } },
@@ -53,55 +50,37 @@ const previewBox = blessed.box({
 screen.append(list);
 screen.append(previewBox);
 
-// --------------------------------------------------------
-// 🛠️ HELPER: The "Nuclear" Wallpaper Setter
-// --------------------------------------------------------
 function forceWallpaperUpdate(imagePath) {
   return new Promise((resolve, reject) => {
-    // 1. Ensure path is absolute and uses backslashes for Windows
     const absPath = path.resolve(imagePath);
 
-    // 2. PowerShell Script that:
-    //    a) Sets Registry keys for "Fill" style (looks best)
-    //    b) Sets the Wallpaper path in Registry
-    //    c) Calls the native Win32 API to refresh the desktop
     const psCommand = `
-            $path = '${absPath}'
-            
-            # Set Registry Keys (Forces "Fill" Style)
-            Set-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop' -Name WallpaperStyle -Value 10
-            Set-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop' -Name TileWallpaper -Value 0
-            Set-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop' -Name Wallpaper -Value $path
+      $path = '${absPath}'
+      Set-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop' -Name WallpaperStyle -Value 10
+      Set-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop' -Name TileWallpaper -Value 0
+      Set-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop' -Name Wallpaper -Value $path
 
-            # Define C# code to call the native Windows API
-            $code = @'
-            using System.Runtime.InteropServices;
-            public class Wallpaper {
-                [DllImport("user32.dll", CharSet=CharSet.Auto)]
-                public static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
-            }
-            '@
-            
-            # Run the API Call
-            Add-Type -TypeDefinition $code
-            [Wallpaper]::SystemParametersInfo(20, 0, $path, 3)
-        `;
+      $code = @'
+      using System.Runtime.InteropServices;
+      public class Wallpaper {
+        [DllImport("user32.dll", CharSet=CharSet.Auto)]
+        public static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
+      }
+      '@
 
-    // Execute PowerShell
+      Add-Type -TypeDefinition $code
+      [Wallpaper]::SystemParametersInfo(20, 0, $path, 3)
+    `;
+
     exec(
       `powershell -ExecutionPolicy Bypass -NoProfile -Command "${psCommand}"`,
       (error, stdout, stderr) => {
-        if (error) {
-          // If it fails, send the detailed error back so we can see it
-          reject(stderr || error.message);
-        } else {
-          resolve(stdout);
-        }
+        if (error) reject(stderr || error.message);
+        else resolve(stdout);
       }
     );
   });
 }
-// --------------------------------------------------------
 
 function getThumbnailUrl(filename) {
   const rawUrl = `https://raw.githubusercontent.com/${GITHUB_USERNAME}/${REPO_NAME}/${BRANCH}/${FOLDER_PATH}/${filename}`;
@@ -115,7 +94,7 @@ async function fetchFiles() {
       (item) =>
         item.type === "file" && item.name.match(/\.(jpg|jpeg|png|webp)$/i)
     );
-  } catch (err) {
+  } catch {
     return [];
   }
 }
@@ -125,7 +104,7 @@ let debounceTimer = null;
 async function start() {
   const files = await fetchFiles();
 
-  if (files.length === 0) {
+  if (!files.length) {
     list.setItems(["No images found."]);
     screen.render();
     return;
@@ -135,7 +114,6 @@ async function start() {
   list.focus();
   screen.render();
 
-  // --- 1. HANDLE SCROLLING ---
   list.on("select item", (item, index) => {
     const selectedFile = files[index];
     const cachePath = path.join(CACHE_DIR, selectedFile.name);
@@ -148,37 +126,36 @@ async function start() {
     debounceTimer = setTimeout(async () => {
       try {
         if (!fs.existsSync(cachePath)) {
-          const thumbUrl = getThumbnailUrl(selectedFile.name);
           const response = await axios({
-            url: thumbUrl,
+            url: getThumbnailUrl(selectedFile.name),
             method: "GET",
             responseType: "arraybuffer",
           });
           fs.writeFileSync(cachePath, response.data);
         }
 
-        let wrapWidth = previewBox.width - 4 || 10;
-        let wrapHeight = previewBox.height - 4 || 10;
+        const wrapWidth = previewBox.width - 4 || 10;
+        const wrapHeight = previewBox.height - 4 || 10;
         const sizeStr = `${wrapWidth}x${wrapHeight}`;
 
         try {
-          const rawOutput = execSync(
+          const raw = execSync(
             `chafa "${cachePath}" -s ${sizeStr} --symbols vhalf,block,space --dither none -c 256`,
             { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }
           );
-          const cleanOutput = rawOutput.replace(/\x1b\[\?25[hl]/g, "");
-          previewBox.setContent(cleanOutput);
-        } catch (e) {
+          previewBox.setContent(raw.replace(/\x1b\[\?25[hl]/g, ""));
+        } catch {
           try {
-            const rawOutput = execSync(
+            const raw = execSync(
               `chafa "${cachePath}" -s ${sizeStr} --symbols ascii`,
               { encoding: "utf-8" }
             );
-            previewBox.setContent(rawOutput.replace(/\x1b\[\?25[hl]/g, ""));
-          } catch (err2) {
-            previewBox.setContent(`{red-fg}Preview Error{/red-fg}`);
+            previewBox.setContent(raw.replace(/\x1b\[\?25[hl]/g, ""));
+          } catch {
+            previewBox.setContent("{red-fg}Preview Error{/red-fg}");
           }
         }
+
         screen.render();
       } catch (err) {
         previewBox.setContent(`{red-fg}Error: ${err.message}{/red-fg}`);
@@ -187,34 +164,29 @@ async function start() {
     }, 400);
   });
 
-  // --- 2. HANDLE SPACEBAR ---
   list.key(["space"], () => {
     const selectedFile = files[list.selected];
     const cachePath = path.join(CACHE_DIR, selectedFile.name);
 
-    if (fs.existsSync(cachePath)) {
-      const msg = blessed.message({
-        top: "center",
-        left: "center",
-        width: "40%",
-        height: 5,
-        border: { type: "line", fg: "magenta" },
-        style: { fg: "white", bg: "magenta" },
-      });
-      screen.append(msg);
-      msg.display(`{center}Opening Image...{/center}`, 1);
+    if (!fs.existsSync(cachePath)) return;
 
-      if (process.platform === "win32") {
-        exec(`explorer "${cachePath}"`);
-      } else if (process.platform === "darwin") {
-        exec(`open "${cachePath}"`);
-      } else {
-        exec(`xdg-open "${cachePath}"`);
-      }
-    }
+    const msg = blessed.message({
+      top: "center",
+      left: "center",
+      width: "40%",
+      height: 5,
+      border: { type: "line", fg: "magenta" },
+      style: { fg: "white", bg: "magenta" },
+    });
+
+    screen.append(msg);
+    msg.display("{center}Opening Image...{/center}", 1);
+
+    if (process.platform === "win32") exec(`explorer "${cachePath}"`);
+    else if (process.platform === "darwin") exec(`open "${cachePath}"`);
+    else exec(`xdg-open "${cachePath}"`);
   });
 
-  // --- 3. HANDLE ENTER (Download & Set) ---
   list.on("select", (item, index) => {
     const selectedFile = files[index];
     const savePath = path.resolve(process.cwd(), selectedFile.name);
@@ -227,9 +199,10 @@ async function start() {
       border: { type: "line", fg: "blue" },
       style: { fg: "white", bg: "blue" },
     });
+
     screen.append(downloadMsg);
     downloadMsg.display(
-      `{center}Downloading & Setting Wallpaper...{/center}`,
+      "{center}Downloading & Setting Wallpaper...{/center}",
       0
     );
     screen.render();
@@ -243,14 +216,12 @@ async function start() {
       response.data.pipe(writer);
 
       writer.on("finish", () => {
-        // Safety Delay: Wait 1.5s for file lock to release
         setTimeout(async () => {
           try {
-            // Try the NUCLEAR option
             await forceWallpaperUpdate(savePath);
 
             downloadMsg.detach();
-            const successMsg = blessed.message({
+            const success = blessed.message({
               top: "center",
               left: "center",
               width: "50%",
@@ -258,11 +229,11 @@ async function start() {
               border: { type: "line", fg: "green" },
               style: { fg: "white", bg: "green" },
             });
-            screen.append(successMsg);
-            successMsg.display(`{center}✅ WALLPAPER UPDATED!{/center}`, 3);
+            screen.append(success);
+            success.display("{center}WALLPAPER UPDATED{/center}", 3);
           } catch (err) {
             downloadMsg.detach();
-            const errorMsg = blessed.message({
+            const error = blessed.message({
               top: "center",
               left: "center",
               width: "60%",
@@ -270,8 +241,8 @@ async function start() {
               border: { type: "line", fg: "red" },
               style: { fg: "white", bg: "red" },
             });
-            screen.append(errorMsg);
-            errorMsg.display(
+            screen.append(error);
+            error.display(
               `{center}FAILED:\n${err.substring(0, 100)}...{/center}`,
               5
             );
@@ -283,9 +254,7 @@ async function start() {
   });
 }
 
-screen.key(["escape", "q", "C-c"], () => {
-  process.exit(0);
-});
+screen.key(["escape", "q", "C-c"], () => process.exit(0));
 
 screen.on("resize", () => {
   list.emit("select item", list.getItem(list.selected), list.selected);
