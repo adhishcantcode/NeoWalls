@@ -10,9 +10,9 @@ import ora from "ora";
 // 1. Create a Public Repo on GitHub
 // 2. Upload images there
 // 3. Put your username and repo name here:
-const GITHUB_USERNAME = "Adhishcantcode";
-const REPO_NAME = "YOUR_REPO_NAME";
-const FOLDER_PATH = ""; // Leave empty if images are in the root of the repo
+const GITHUB_USERNAME = "adhishcantcode";
+const REPO_NAME = "NeoWalls";
+const FOLDER_PATH = "/Walls"; // Leave empty if images are in the root of the repo
 
 const API_URL = `https://api.github.com/repos/${GITHUB_USERNAME}/${REPO_NAME}/contents/${FOLDER_PATH}`;
 
