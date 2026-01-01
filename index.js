@@ -8,50 +8,55 @@ import { execSync } from "child_process";
 const GITHUB_USERNAME = "adhishcantcode";
 const REPO_NAME = "Neowalls";
 const FOLDER_PATH = "Walls";
+const BRANCH = "main";
 // ---------------------
 
 const API_URL = `https://api.github.com/repos/${GITHUB_USERNAME}/${REPO_NAME}/contents/${FOLDER_PATH}`;
-const TEMP_FILE = path.resolve(process.cwd(), "temp_preview_image");
 
-// 1. Setup the Screen
+const CACHE_DIR = path.resolve(process.cwd(), "neowalls_cache");
+if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR);
+
 const screen = blessed.screen({
   smartCSR: true,
-  title: "Neowalls Downloader",
+  title: "Neowalls Turbo",
+  fullUnicode: true,
 });
 
-// 2. Create Layout: List on the LEFT
 const list = blessed.list({
   top: "center",
   left: 0,
   width: "30%",
   height: "100%",
-  items: ["Loading..."], // Initial placeholder
+  items: ["Loading..."],
   border: { type: "line" },
   style: {
-    selected: { bg: "blue", fg: "white" }, // Highlight color
+    selected: { bg: "blue", fg: "white" },
     border: { fg: "cyan" },
   },
-  keys: true, // Enable arrow keys
-  vi: true, // Enable j/k keys
+  keys: true,
+  vi: true,
 });
 
-// 3. Create Layout: Preview on the RIGHT
 const previewBox = blessed.box({
   top: "center",
   left: "30%",
   width: "70%",
   height: "100%",
-  content: "{center}Preview Area{/center}",
+  content: "{center}Preview Area\n(Move arrows to load){/center}",
   tags: true,
   border: { type: "line" },
   style: { border: { fg: "yellow" } },
 });
 
-// Add widgets to screen
 screen.append(list);
 screen.append(previewBox);
 
-// Helper to fetch file list
+function getThumbnailUrl(filename) {
+  const rawUrl = `https://raw.githubusercontent.com/${GITHUB_USERNAME}/${REPO_NAME}/${BRANCH}/${FOLDER_PATH}/${filename}`;
+  // Request a slightly higher quality thumbnail (w=600, q=80)
+  return `https://wsrv.nl/?url=${encodeURIComponent(rawUrl)}&w=600&q=80`;
+}
+
 async function fetchFiles() {
   try {
     const response = await axios.get(API_URL);
@@ -64,84 +69,130 @@ async function fetchFiles() {
   }
 }
 
-// 4. MAIN LOGIC
+let debounceTimer = null;
+
 async function start() {
   const files = await fetchFiles();
 
   if (files.length === 0) {
-    list.setItems(["No images found or Error connecting."]);
+    list.setItems(["No images found."]);
     screen.render();
     return;
   }
 
-  // Populate the list
   list.setItems(files.map((f) => f.name));
-  list.focus(); // Give keyboard control to the list
+  list.focus();
   screen.render();
 
-  // --- EVENT: When user moves selection (Arrow Up/Down) ---
-  list.on("select item", async (item, index) => {
+  list.on("select item", (item, index) => {
     const selectedFile = files[index];
+    const cachePath = path.join(CACHE_DIR, selectedFile.name);
 
-    previewBox.setContent("{center}Loading preview...{/center}");
+    previewBox.setContent("{center}\n\nLoading...{/center}");
     screen.render();
 
-    try {
-      // A. Download image to temp file
-      const response = await axios({
-        url: selectedFile.download_url,
-        method: "GET",
-        responseType: "arraybuffer",
-      });
-      fs.writeFileSync(TEMP_FILE, response.data);
+    if (debounceTimer) clearTimeout(debounceTimer);
 
-      // B. Generate Preview with Chafa
-      // We pipe the output directly into the box content
-      // -s sets size to fit the box roughly (width x height)
-      const chafaOutput = execSync(
-        `chafa "${TEMP_FILE}" -s 60x30 --symbols vhalf+block+space`,
-        { encoding: "utf-8" }
-      );
+    debounceTimer = setTimeout(async () => {
+      try {
+        if (!fs.existsSync(cachePath)) {
+          const thumbUrl = getThumbnailUrl(selectedFile.name);
+          const response = await axios({
+            url: thumbUrl,
+            method: "GET",
+            responseType: "arraybuffer",
+          });
+          fs.writeFileSync(cachePath, response.data);
+        }
 
-      previewBox.setContent(chafaOutput);
-      screen.render();
-    } catch (err) {
-      previewBox.setContent(
-        `{red-fg}Error loading preview: ${err.message}{/red-fg}`
-      );
-      screen.render();
-    }
+        let wrapWidth = previewBox.width - 4 || 10;
+        let wrapHeight = previewBox.height - 4 || 10;
+        const sizeStr = `${wrapWidth}x${wrapHeight}`;
+
+        try {
+          // --- QUALITY UPDATE ---
+          // --symbols vhalf,block,space : Uses half-blocks for 2x detail
+          // --dither none : Removes noisy "dots", making it look smoother like a photo
+          // -c 256 : Safe color mode for your version
+          const rawOutput = execSync(
+            `chafa "${cachePath}" -s ${sizeStr} --symbols vhalf,block,space --dither none -c 256`,
+            { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }
+          );
+
+          const cleanOutput = rawOutput.replace(/\x1b\[\?25[hl]/g, "");
+          previewBox.setContent(cleanOutput);
+        } catch (e) {
+          // Fallback to simple ascii if even vhalf fails
+          try {
+            const rawOutput = execSync(
+              `chafa "${cachePath}" -s ${sizeStr} --symbols ascii`,
+              { encoding: "utf-8" }
+            );
+            previewBox.setContent(rawOutput.replace(/\x1b\[\?25[hl]/g, ""));
+          } catch (err2) {
+            previewBox.setContent(`{red-fg}Preview Error{/red-fg}`);
+          }
+        }
+
+        screen.render();
+      } catch (err) {
+        previewBox.setContent(`{red-fg}Error: ${err.message}{/red-fg}`);
+        screen.render();
+      }
+    }, 400);
   });
 
-  // --- EVENT: When user presses ENTER to Download ---
   list.on("select", (item, index) => {
     const selectedFile = files[index];
     const savePath = path.resolve(process.cwd(), selectedFile.name);
 
-    // Copy the temp file (since we already downloaded it for preview!)
-    if (fs.existsSync(TEMP_FILE)) {
-      fs.copyFileSync(TEMP_FILE, savePath);
+    const downloadMsg = blessed.message({
+      top: "center",
+      left: "center",
+      width: "50%",
+      height: 5,
+      border: { type: "line", fg: "blue" },
+      style: { fg: "white", bg: "blue" },
+    });
+    screen.append(downloadMsg);
+    downloadMsg.display(`{center}Downloading High-Res Image...{/center}`, 0);
+    screen.render();
 
-      // Show success message briefly
-      const msg = blessed.message({
-        top: "center",
-        left: "center",
-        width: "50%",
-        height: 5,
-        border: { type: "line", fg: "green" },
-        style: { fg: "white", bg: "green" },
+    axios({
+      url: selectedFile.download_url,
+      method: "GET",
+      responseType: "stream",
+    }).then((response) => {
+      const writer = fs.createWriteStream(savePath);
+      response.data.pipe(writer);
+
+      writer.on("finish", () => {
+        downloadMsg.detach();
+        const successMsg = blessed.message({
+          top: "center",
+          left: "center",
+          width: "50%",
+          height: 5,
+          border: { type: "line", fg: "green" },
+          style: { fg: "white", bg: "green" },
+        });
+        screen.append(successMsg);
+        successMsg.display(
+          `{center}Saved HD Image to:\n${selectedFile.name}{/center}`,
+          2
+        );
       });
-      screen.append(msg);
-      msg.display(`Downloaded: ${selectedFile.name}`, 2, () => {
-        msg.detach(); // Remove message after 2 seconds
-        screen.render();
-      });
-    }
+    });
   });
 }
 
-// Quit on Escape, q, or Ctrl+C
-screen.key(["escape", "q", "C-c"], () => process.exit(0));
+screen.key(["escape", "q", "C-c"], () => {
+  process.exit(0);
+});
 
-// Start the app
+screen.on("resize", () => {
+  list.emit("select item", list.getItem(list.selected), list.selected);
+  screen.render();
+});
+
 start();
