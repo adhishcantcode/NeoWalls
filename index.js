@@ -147,7 +147,7 @@ async function start() {
     const msg = blessed.message({
       top: "center",
       left: "center",
-      width: "40%",
+      width: "610%",
       height: 5,
       border: { type: "line", fg: "magenta" },
       style: { fg: "white", bg: "magenta" },
